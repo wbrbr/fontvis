@@ -92,35 +92,36 @@ void LineRenderer::drawLineStrip(const LineStrip& strip) {
 
 struct OutlineState {
     std::vector<std::vector<glm::vec2>> lines;
-    float em_size;
+    float ascender, descender, bearing_x;
 };
 
 int move_to(const FT_Vector* to, void* user) {
-    std::cerr << "move_to (" << to->x << "," << to->y << ")" << std::endl;
     OutlineState* state = static_cast<OutlineState*>(user);
     state->lines.push_back(std::vector<glm::vec2>());
-    state->lines.back().push_back(glm::vec2(to->x, to->y) / state->em_size);
+    state->lines.back().push_back(glm::vec2(to->x - state->bearing_x, to->y - state->descender) / (state->ascender - state->descender));
     return 0;
 }
 
 int line_to(const FT_Vector* to, void* user) {
-    std::cerr << "line_to (" << to->x << "," << to->y << ")" << std::endl;
     OutlineState* state = static_cast<OutlineState*>(user);
-    state->lines.back().push_back(glm::vec2(to->x, to->y) / state->em_size);
+    state->lines.back().push_back(glm::vec2(to->x - state->bearing_x, to->y - state->descender) / (state->ascender - state->descender));
     return 0;
 }
 
 int conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
     OutlineState* state = static_cast<OutlineState*>(user);
-    glm::vec2 w0 = state->lines.back().back() * state->em_size;
+    glm::vec2 w0 = state->lines.back().back() * (state->ascender - state->descender) + glm::vec2(state->bearing_x, state->descender);
     glm::vec2 w1 = glm::vec2(control->x, control->y);
     glm::vec2 w2 = glm::vec2(to->x, to->y);
 
-    for (unsigned int i = 0; i < 16; i++) {
-        float t = (float)i / 16.f;
+    unsigned int N = 30;
+    for (unsigned int i = 0; i < N; i++) {
+        float t = (float)i / (float)(N-1);
         float mt = 1.f - t;
         glm::vec2 p = mt * mt * w0 + 2 * t * mt * w1 + t * t * w2;
-        state->lines.back().push_back(p / state->em_size);
+        p.x -= state->bearing_x;
+        p.y -= state->descender;
+        state->lines.back().push_back(p / (state->ascender - state->descender));
     }
 
     return 0;
@@ -128,24 +129,78 @@ int conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
 
 int cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
     OutlineState* state = static_cast<OutlineState*>(user);
-    glm::vec2 w0 = state->lines.back().back() * state->em_size;
+    glm::vec2 w0 = state->lines.back().back() * (state->ascender - state->descender) + glm::vec2(state->bearing_x, state->descender);
     glm::vec2 w1 = glm::vec2(control1->x, control1->y);
     glm::vec2 w2 = glm::vec2(control2->x, control2->y);
     glm::vec2 w3 = glm::vec2(to->x, to->y);
 
-    for (unsigned int i = 0; i < 16; i++) {
-        float t = (float)i / 16.f;
+    const unsigned int N = 30;
+    for (unsigned int i = 0; i < N; i++) {
+        float t = (float)i / (float)(N-1);
         float mt = 1.f - t;
 
         glm::vec2 p = mt*mt*mt*w0 + 3.f*t*mt*mt*w1 + 3.f*t*t*mt*w2 + t*t*t*w3;
-        state->lines.back().push_back(p / state->em_size);
+        p.x -= state->bearing_x;
+        p.y -= state->descender;
+        state->lines.back().push_back(p / (state->ascender - state->descender));
     }
 
     return 0;
 }
 
-int main()
+struct Context {
+    LineRenderer& renderer;
+    FT_Face& face;
+    std::vector<LineStrip>& strips;
+};
+
+void load_character(std::vector<LineStrip>& strips, FT_Face& face, LineRenderer& renderer, unsigned int codepoint) {
+
+    strips.clear();
+    unsigned int glyph_index = FT_Get_Char_Index(face, codepoint);
+
+    FT_Error err = FT_Load_Glyph(face, glyph_index, FT_LOAD_NO_SCALE);
+    if (err) {
+        std::cerr << "Failed to load glyph" << std::endl;
+        std::exit(1);
+    }
+
+    assert(face->glyph->format == FT_GLYPH_FORMAT_OUTLINE);
+
+    FT_Outline_Funcs outline_funcs;
+    outline_funcs.move_to = move_to;
+    outline_funcs.line_to = line_to;
+    outline_funcs.conic_to = conic_to;
+    outline_funcs.cubic_to = cubic_to;
+    outline_funcs.shift = 0;
+    outline_funcs.delta = 0;
+
+    OutlineState st;
+    st.ascender = face->ascender;
+    st.descender = face->descender;
+    st.bearing_x = face->glyph->metrics.horiBearingX;
+
+    FT_Outline_Decompose(&face->glyph->outline, &outline_funcs, &st);
+    glClearColor(1, 1, 1, 1);
+
+    for (const auto& line: st.lines) {
+        LineStrip strip = renderer.createLineStrip(line.data(), line.size());
+        strips.push_back(strip);
+    }
+}
+
+void character_callback(GLFWwindow* window, unsigned int codepoint) {
+    Context* ctx = static_cast<Context*>(glfwGetWindowUserPointer(window));
+    load_character(ctx->strips, ctx->face, ctx->renderer, codepoint);
+}
+
+int main(int argc, char** argv)
 {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <font file>" << std::endl;
+        std::exit(1);
+    }
+
     if (!glfwInit()) {
         std::cerr << "Failed to init GLFW" << std::endl;
         std::exit(1);
@@ -162,6 +217,7 @@ int main()
         std::exit(1);
     }
 
+    glfwSetCharCallback(window, character_callback);
     glfwMakeContextCurrent(window);
 
     if (!gladLoadGL(glfwGetProcAddress)) {
@@ -169,13 +225,13 @@ int main()
         std::exit(1);
     }
 
-    std::vector<glm::vec2> points(2);
-    points[0] = glm::vec2(0.3, 0.5);
-    points[1] = glm::vec2(0.7, 0.5);
-
+    glEnable(GL_BLEND);
+    glEnable(GL_LINE_SMOOTH);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+    glLineWidth(2.0);
 
     LineRenderer renderer;
-    LineStrip strip = renderer.createLineStrip(points.data(), points.size());
 
     FT_Library ft_lib;
     FT_Error err = FT_Init_FreeType(&ft_lib);
@@ -185,57 +241,27 @@ int main()
     }
 
     FT_Face face;
-    err = FT_New_Face(ft_lib, "font.ttf", 0, &face);
+    err = FT_New_Face(ft_lib, argv[1], 0, &face);
     if (err) {
         std::cerr << "Failed to load the font" << std::endl;
         std::exit(1);
     }
 
-    std::cout << "Num glyphs: " << face->num_glyphs << std::endl;
+    assert(FT_IS_SCALABLE(face));
 
-    err = FT_Set_Char_Size(face, 0, 16*64, 300, 300);
-    if (err) {
-        std::cerr << "Failed to set char size" << std::endl;
-        std::exit(1);
-    }
-
-
-    unsigned int glyph_index = FT_Get_Char_Index(face, 'B');
-
-    err = FT_Load_Glyph(face, glyph_index, FT_LOAD_DEFAULT);
-
-    assert(face->glyph->format == FT_GLYPH_FORMAT_OUTLINE);
-
-    std::cout << "N. points: " << face->glyph->outline.n_points << std::endl;
-
-    FT_Outline_Funcs outline_funcs;
-    outline_funcs.move_to = move_to;
-    outline_funcs.line_to = line_to;
-    outline_funcs.conic_to = conic_to;
-    outline_funcs.cubic_to = cubic_to;
-    outline_funcs.shift = 0;
-    outline_funcs.delta = 0;
-
-    OutlineState st;
-    //st.em_size = face->units_per_EM;
-    st.em_size = 3500;
-
-    std::cout << st.em_size << std::endl;
-
-    FT_Outline_Decompose(&face->glyph->outline, &outline_funcs, &st);
-    glClearColor(1, 1, 1, 1);
+    std::cout << "Name: " << face->family_name << " " << face->style_name << std::endl;
 
     std::vector<LineStrip> strips;
-    for (const auto& line: st.lines) {
-        LineStrip strip = renderer.createLineStrip(line.data(), line.size());
-        strips.push_back(std::move(strip));
-    }
+    Context ctx{.renderer = renderer, .face = face, .strips = strips};
+
+    glfwSetWindowUserPointer(window, &ctx);
+
+    load_character(strips, face, renderer, 'B');
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
         glClear(GL_COLOR_BUFFER_BIT);
-        //renderer.drawLineStrip(strip);
         for (const LineStrip& strip : strips) {
             renderer.drawLineStrip(strip);
         }
