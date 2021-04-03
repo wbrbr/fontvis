@@ -1,6 +1,9 @@
 #include <iostream>
 #include <vector>
 
+#include "ft2build.h"
+#include FT_FREETYPE_H
+#include FT_OUTLINE_H
 #define GLAD_GL_IMPLEMENTATION
 #include "glad.h"
 #include "GLFW/glfw3.h"
@@ -28,9 +31,44 @@ private:
     int program;
 };
 
+struct OutlineState {
+    std::vector<std::vector<glm::vec2>> lines;
+};
+
+int move_to(const FT_Vector* to, void* user) {
+    std::cerr << "move_to" << std::endl;
+    OutlineState* state = static_cast<OutlineState*>(user);
+    state->lines.push_back(std::vector<glm::vec2>());
+    state->lines.back().push_back(glm::vec2(to->x, to->y));
+    return 0;
+}
+
+int line_to(const FT_Vector* to, void* user) {
+    std::cerr << "line_to" << std::endl;
+    OutlineState* state = static_cast<OutlineState*>(user);
+    state->lines.back().push_back(glm::vec2(to->x, to->y));
+    return 0;
+}
+
+int conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
+    (void)control;
+    std::cerr << "Warning: conic curve" << std::endl;
+    OutlineState* state = static_cast<OutlineState*>(user);
+    state->lines.back().push_back(glm::vec2(to->x, to->y));
+    return 0;
+}
+
+int cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
+    (void)control1;
+    (void)control2;
+    std::cerr << "Warning: cubic curve" << std::endl;
+    OutlineState* state = static_cast<OutlineState*>(user);
+    state->lines.back().push_back(glm::vec2(to->x, to->y));
+    return 0;
+}
+
 int main()
 {
-    std::cout << "Hello World!" << std::endl;
     if (!glfwInit()) {
         std::cerr << "Failed to init GLFW" << std::endl;
         std::exit(1);
@@ -95,6 +133,49 @@ int main()
 
     glUseProgram(program);
 
+
+    FT_Library ft_lib;
+    FT_Error err = FT_Init_FreeType(&ft_lib);
+    if (err) {
+        std::cerr << "Failed to init FreeType" << std::endl;
+        std::exit(1);
+    }
+
+    FT_Face face;
+    err = FT_New_Face(ft_lib, "font.ttf", 0, &face);
+    if (err) {
+        std::cerr << FT_Error_String(err) << std::endl;
+        std::exit(1);
+    }
+
+    std::cout << "Num glyphs: " << face->num_glyphs << std::endl;
+
+    err = FT_Set_Char_Size(face, 0, 16*64, 300, 300);
+    if (err) {
+        std::cerr << FT_Error_String(err) << std::endl;
+        std::exit(1);
+    }
+
+
+    unsigned int glyph_index = FT_Get_Char_Index(face, 'A');
+
+    err = FT_Load_Glyph(face, glyph_index, FT_LOAD_DEFAULT);
+
+    assert(face->glyph->format == FT_GLYPH_FORMAT_OUTLINE);
+
+    std::cout << "N. points: " << face->glyph->outline.n_points << std::endl;
+
+    FT_Outline_Funcs outline_funcs;
+    outline_funcs.move_to = move_to;
+    outline_funcs.line_to = line_to;
+    outline_funcs.conic_to = conic_to;
+    outline_funcs.cubic_to = cubic_to;
+    outline_funcs.shift = 0;
+    outline_funcs.delta = 0;
+
+    OutlineState st;
+
+    FT_Outline_Decompose(&face->glyph->outline, &outline_funcs, &st);
     glClearColor(1, 0, 0, 1);
 
     while (!glfwWindowShouldClose(window)) {
