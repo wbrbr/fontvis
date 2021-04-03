@@ -9,14 +9,14 @@
 #include "GLFW/glfw3.h"
 #include "glm/vec2.hpp"
 
-const char* vertex_src = R"raw(#version 330 core
+static const char* vertex_src = R"raw(#version 330 core
 layout(location = 0) in vec2 position;
 
 void main() {
     gl_Position = vec4(2.0 * position - vec2(1.), 0.0, 1.0);
 })raw";
 
-const char* fragment_src = R"raw(#version 330 core
+static const char* fragment_src = R"raw(#version 330 core
 out vec4 color;
 
 void main() {
@@ -36,7 +36,7 @@ public:
     LineStrip createLineStrip(const glm::vec2* points, unsigned int npoints);
 
 private:
-    int program;
+    unsigned int program;
 };
 
 LineRenderer::LineRenderer() {
@@ -86,7 +86,7 @@ LineStrip LineRenderer::createLineStrip(const glm::vec2 *points, unsigned int np
 void LineRenderer::drawLineStrip(const LineStrip& strip) {
     glUseProgram(program);
     glBindVertexArray(strip.vao);
-    glDrawArrays(GL_LINE_STRIP, 0, strip.n_points);
+    glDrawArrays(GL_LINE_STRIP, 0, (int)strip.n_points);
     glBindVertexArray(0);
 }
 
@@ -111,19 +111,36 @@ int line_to(const FT_Vector* to, void* user) {
 }
 
 int conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
-    (void)control;
-    std::cerr << "Warning: conic curve" << std::endl;
     OutlineState* state = static_cast<OutlineState*>(user);
-    state->lines.back().push_back(glm::vec2(to->x, to->y) / state->em_size);
+    glm::vec2 w0 = state->lines.back().back() * state->em_size;
+    glm::vec2 w1 = glm::vec2(control->x, control->y);
+    glm::vec2 w2 = glm::vec2(to->x, to->y);
+
+    for (unsigned int i = 0; i < 16; i++) {
+        float t = (float)i / 16.f;
+        float mt = 1.f - t;
+        glm::vec2 p = mt * mt * w0 + 2 * t * mt * w1 + t * t * w2;
+        state->lines.back().push_back(p / state->em_size);
+    }
+
     return 0;
 }
 
 int cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
-    (void)control1;
-    (void)control2;
-    std::cerr << "Warning: cubic curve" << std::endl;
     OutlineState* state = static_cast<OutlineState*>(user);
-    state->lines.back().push_back(glm::vec2(to->x, to->y) / state->em_size);
+    glm::vec2 w0 = state->lines.back().back() * state->em_size;
+    glm::vec2 w1 = glm::vec2(control1->x, control1->y);
+    glm::vec2 w2 = glm::vec2(control2->x, control2->y);
+    glm::vec2 w3 = glm::vec2(to->x, to->y);
+
+    for (unsigned int i = 0; i < 16; i++) {
+        float t = (float)i / 16.f;
+        float mt = 1.f - t;
+
+        glm::vec2 p = mt*mt*mt*w0 + 3.f*t*mt*mt*w1 + 3.f*t*t*mt*w2 + t*t*t*w3;
+        state->lines.back().push_back(p / state->em_size);
+    }
+
     return 0;
 }
 
@@ -170,7 +187,7 @@ int main()
     FT_Face face;
     err = FT_New_Face(ft_lib, "font.ttf", 0, &face);
     if (err) {
-        std::cerr << FT_Error_String(err) << std::endl;
+        std::cerr << "Failed to load the font" << std::endl;
         std::exit(1);
     }
 
@@ -178,12 +195,12 @@ int main()
 
     err = FT_Set_Char_Size(face, 0, 16*64, 300, 300);
     if (err) {
-        std::cerr << FT_Error_String(err) << std::endl;
+        std::cerr << "Failed to set char size" << std::endl;
         std::exit(1);
     }
 
 
-    unsigned int glyph_index = FT_Get_Char_Index(face, 'A');
+    unsigned int glyph_index = FT_Get_Char_Index(face, 'B');
 
     err = FT_Load_Glyph(face, glyph_index, FT_LOAD_DEFAULT);
 
